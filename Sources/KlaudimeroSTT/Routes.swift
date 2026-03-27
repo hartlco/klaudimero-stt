@@ -93,6 +93,8 @@ func routes(_ app: Application) throws {
                 throw Abort(.badRequest, reason: error.description)
             case .audioFileError:
                 throw Abort(.badRequest, reason: error.description)
+            case .analysisError:
+                throw Abort(.internalServerError, reason: error.description)
             }
         }
 

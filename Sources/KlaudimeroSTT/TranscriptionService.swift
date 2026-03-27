@@ -7,6 +7,7 @@ enum TranscriptionError: Error, CustomStringConvertible {
     case localeNotInstalled(String)
     case noSpeechDetected
     case audioFileError(String)
+    case analysisError(String)
 
     var description: String {
         switch self {
@@ -18,6 +19,8 @@ enum TranscriptionError: Error, CustomStringConvertible {
             return "No speech detected in audio"
         case .audioFileError(let reason):
             return "Failed to open audio file: \(reason)"
+        case .analysisError(let reason):
+            return "Analysis failed: \(reason)"
         }
     }
 }
@@ -27,7 +30,7 @@ struct TranscriptionResult: Sendable {
     let locale: String?
 }
 
-struct TranscriptionService {
+enum TranscriptionService {
     static func transcribe(fileURL: URL, localeHint: Locale? = nil) async throws -> TranscriptionResult {
         let locale = localeHint ?? .autoupdatingCurrent
 
@@ -41,7 +44,10 @@ struct TranscriptionService {
             }
         }
 
-        let transcriber = SpeechTranscriber(locale: locale, preset: .transcription)
+        let transcriber = SpeechTranscriber(
+            locale: locale,
+            preset: .progressiveTranscription
+        )
 
         let audioFile: AVAudioFile
         do {
@@ -51,26 +57,49 @@ struct TranscriptionService {
         }
 
         let analyzer = SpeechAnalyzer(modules: [transcriber])
+        let lastText = LastText()
 
-        // Collect results concurrently while the analyzer processes the audio
-        async let _ = try analyzer.analyzeSequence(from: audioFile)
-
-        var segments: [String] = []
-        for try await result in transcriber.results {
-            if result.isFinal {
+        // Collect results concurrently — progressive results stream during analysis
+        let resultTask = Task.detached {
+            for try await result in transcriber.results {
                 let text = String(result.text.characters)
                     .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
                 if !text.isEmpty {
-                    segments.append(text)
+                    lastText.set(text)
                 }
             }
         }
 
-        let fullText = segments.joined(separator: " ")
+        // Run analysis
+        _ = try await analyzer.analyzeSequence(from: audioFile)
+
+        // The progressive results stream doesn't terminate on its own after analysis.
+        // Give it a moment for final results to flush, then cancel.
+        try await Task.sleep(for: .milliseconds(500))
+        resultTask.cancel()
+
+        let fullText = lastText.get()
         guard !fullText.isEmpty else {
             throw TranscriptionError.noSpeechDetected
         }
 
         return TranscriptionResult(text: fullText, locale: locale.identifier)
+    }
+}
+
+final class LastText: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _text: String = ""
+
+    func set(_ text: String) {
+        lock.lock()
+        _text = text
+        lock.unlock()
+    }
+
+    func get() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        return _text
     }
 }

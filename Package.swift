@@ -18,5 +18,9 @@ let package = Package(
             ],
             path: "Sources/KlaudimeroSTT"
         ),
+        .executableTarget(
+            name: "TranscribeWorker",
+            path: "Sources/TranscribeWorker"
+        ),
     ]
 )
